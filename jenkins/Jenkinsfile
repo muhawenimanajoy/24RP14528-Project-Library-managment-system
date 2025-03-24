@@ -1,0 +1,95 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKER_REGISTRY = 'your-registry'
+        BACKEND_IMAGE = "${DOCKER_REGISTRY}/library-backend"
+        BOOK_SERVICE_IMAGE = "${DOCKER_REGISTRY}/book-service"
+        KUBECONFIG = credentials('kubeconfig')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh 'npm install'
+                dir('frontend') {
+                    sh 'npm install'
+                }
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                sh 'npm test'
+            }
+        }
+
+        stage('Security Scan') {
+            steps {
+                sh 'npm audit'
+            }
+        }
+
+        stage('Build Docker Images') {
+            steps {
+                script {
+                    // Build Backend Image
+                    docker.build("${BACKEND_IMAGE}", '-f backend/Dockerfile .')
+                    
+                    // Build Book Service Image
+                    docker.build("${BOOK_SERVICE_IMAGE}", '-f microservice/Dockerfile .')
+                }
+            }
+        }
+
+        stage('Push Docker Images') {
+            steps {
+                script {
+                    docker.withRegistry('https://your-registry', 'docker-credentials') {
+                        docker.image("${BACKEND_IMAGE}").push()
+                        docker.image("${BOOK_SERVICE_IMAGE}").push()
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                script {
+                    withKubeConfig([credentialsId: 'kubeconfig']) {
+                        sh 'kubectl apply -f k8s/'
+                    }
+                }
+            }
+        }
+
+        stage('Health Check') {
+            steps {
+                script {
+                    sh '''
+                        kubectl wait --for=condition=ready pod -l app=library-backend --timeout=300s
+                        kubectl wait --for=condition=ready pod -l app=book-service --timeout=300s
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+        success {
+            echo 'Pipeline completed successfully!'
+        }
+        failure {
+            echo 'Pipeline failed!'
+        }
+    }
+}
